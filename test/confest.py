@@ -1,39 +1,55 @@
-import sqlite3
+import os
+import tempfile
 
-import click
-from flask import current_app, g
+import pytest
+from flaskr import create_app
+from flaskr.db import get_db, init_db
+
+with open(os.path.join(os.path.dirname(__file__), 'data.sql'), 'rb') as f:
+    _data_sql = f.read().decode('utf8')
 
 
-def get_db():
-    if 'db' not in g:
-        g.db = sqlite3.connect(
-            current_app.config['DATABASE'],
-            detect_types=sqlite3.PARSE_DECLTYPES
+@pytest.fixture
+def app():
+    db_fd, db_path = tempfile.mkstemp()
+
+    app = create_app({
+        'TESTING': True,
+        'DATABASE': db_path,
+    })
+
+    with app.app_context():
+        init_db()
+        get_db().executescript(_data_sql)
+
+    yield app
+
+    os.close(db_fd)
+    os.unlink(db_path)
+
+
+@pytest.fixture
+def client(app):
+    return app.test_client()
+
+
+@pytest.fixture
+def runner(app):
+    return app.test_cli_runner()
+
+class AuthActions(object):
+    def __init__(self, client):
+        self._client = client
+
+    def login(self, username='test', password='test'):
+        return self._client.post(
+            '/auth/login',
+            data={'username': username, 'password': password}
         )
-        g.db.row_factory = sqlite3.Row
 
-    return g.db
+    def logout(self):
+        return self._client.get('/auth/logout')
 
-
-def close_db(e=None):
-    db = g.pop('db', None)
-
-    if db is not None:
-        db.close()
-
-def init_db():
-    db = get_db()
-
-    with current_app.open_resource('schema.sql') as f:
-        db.executescript(f.read().decode('utf8'))
-
-
-@click.command('init-db')
-def init_db_command():
-    """Clear the existing data and create new tables."""
-    init_db()
-    click.echo('Initialized the database.')
-
-def init_app(app):
-    app.teardown_appcontext(close_db)
-    app.cli.add_command(init_db_command)
+@pytest.fixture
+def auth(client):
+    return AuthActions(client)

@@ -1,80 +1,27 @@
-import functools
+import sqlite3
 
-from flask import (
-    Blueprint, flash, g, redirect, render_template, request, session, url_for
-)
-from werkzeug.security import check_password_hash, generate_password_hash
-
+import pytest
 from flaskr.db import get_db
 
-bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-@bp.route('/register', methods=('GET', 'POST'))
-def register():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+def test_get_close_db(app):
+    with app.app_context():
         db = get_db()
-        error = None
+        assert db is get_db()
 
-        if not username:
-            error = 'Username is required.'
-        elif not password:
-            error = 'Password is required.'
+    with pytest.raises(sqlite3.ProgrammingError) as e:
+        db.execute('SELECT 1')
 
-        if error is None:
-            try:
-                db.execute(
-                    "INSERT INTO user (username, password) VALUES (?, ?)",
-                    (username, generate_password_hash(password)),
-                )
-                db.commit()
-            except db.IntegrityError:
-                error = f"User {username} is already registered."
-            else:
-                return redirect(url_for("auth.login"))
+    assert 'closed' in str(e.value)
 
-        flash(error)
+def test_init_db_command(runner, monkeypatch):
+    class Recorder(object):
+        called = False
 
-    return render_template('auth/register.html')
+    def fake_init_db():
+        Recorder.called = True
 
-@bp.route('/login', methods=('GET', 'POST'))
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        db = get_db()
-        error = None
-        user = db.execute(
-            'SELECT * FROM user WHERE username = ?', (username,)
-        ).fetchone()
-
-        if user is None:
-            error = 'Incorrect username.'
-        elif not check_password_hash(user['password'], password):
-            error = 'Incorrect password.'
-
-        if error is None:
-            session.clear()
-            session['user_id'] = user['id']
-            return redirect(url_for('index'))
-
-        flash(error)
-
-    return render_template('auth/login.html')
-
-@bp.before_app_request
-def load_logged_in_user():
-    user_id = session.get('user_id')
-
-    if user_id is None:
-        g.user = None
-    else:
-        g.user = get_db().execute(
-            'SELECT * FROM user WHERE id = ?', (user_id,)
-        ).fetchone()
-
-@bp.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('index'))
+    monkeypatch.setattr('flaskr.db.init_db', fake_init_db)
+    result = runner.invoke(args=['init-db'])
+    assert 'Initialized' in result.output
+    assert Recorder.called
